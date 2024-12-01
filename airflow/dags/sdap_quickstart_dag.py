@@ -35,19 +35,54 @@ with DAG(
         python_callable=set_docker_platform,
     )
 
+    # Task Group: Setup Environment
+    with TaskGroup("setup_environment") as setup_group:
+
+        # Task: Source Directory Setup Script
+
+        setup_directory_task = BashOperator(
+            task_id="setup_directory_task",
+            bash_command="""
+            set -a && source DIR_SETUP_NEXUS_QUICKSTART.sh /home/marc/Documents/Github/SDAP-AIRFLOW/Apache-SDAP-Airflow/ && set +a
+            """,
+        )
+
+        create_docker_network = BashOperator(
+            task_id="create_docker_network",
+            bash_command="docker network create sdap-net || echo 'sdap-net already exists'",
+        )
+
+        # Task: Pull Docker Images
+        pull_docker_images = BashOperator(
+            task_id='pull_docker_images',
+            bash_command="""
+            docker pull zookeeper:$ZK_VERSION &&
+            docker pull apache/sdap-solr-cloud:$SOLR_VERSION &&
+            docker pull apache/sdap-solr-cloud-init:$SOLR_CLOUD_INIT_VERSION &&
+            docker pull bitnami/cassandra:$CASSANDRA_VERSION &&
+            docker pull bitnami/rabbitmq:$RMQ_VERSION &&
+            docker pull apache/sdap-granule-ingester:$GRANULE_INGESTER_VERSION &&
+            docker pull apache/sdap-collection-manager:$COLLECTION_MANAGER_VERSION
+            """,
+            env=os.environ,  # Pass sourced environment variables
+        )
+
+        # Task Group Dependencies
+        setup_directory_task >> create_docker_network >> pull_docker_images
+
     # Task Group: Start Core Components
     with TaskGroup("start_core_components") as core_components_group:
 
         # Task: Start Zookeeper
         start_zookeeper = DockerOperator(
             task_id='start_zookeeper',
-            image='zookeeper:3.5.5',
+            image=f"zookeeper:{os.environ.get('ZK_VERSION', '3.5.5')}",
             container_name='zookeeper',
             api_version='auto',
             auto_remove=True,
             command="zkServer.sh start-foreground",
             docker_url='unix://var/run/docker.sock',
-            network_mode='bridge',
+            network_mode='sdap-net',
         )
 
         # Task: Verify Zookeeper is running
@@ -59,16 +94,24 @@ with DAG(
             poke_interval=10,
         )
 
+        # Task: Create ZNode for Solr
+        create_solr_znode = BashOperator(
+            task_id='create_solr_znode',
+            bash_command="""
+            docker exec zookeeper bash -c "bin/zkCli.sh create /solr"
+            """,
+        )
+
         # Task: Start Solr
-        start_solr = DockerOperator(
+        start_solr = DockerOperator( 
             task_id='start_solr',
-            image='apache/sdap-solr-cloud:1.4.0',
+            image=f"apache/sdap-solr-cloud:{os.environ.get('SOLR_VERSION', '1.4.0')}",
             container_name='solr',
             api_version='auto',
             auto_remove=True,
             command="solr start -f",
             docker_url='unix://var/run/docker.sock',
-            network_mode='bridge',
+            network_mode='sdap-net',
             environment={
                 'SOLR_ZK_HOSTS': 'zookeeper:2181',
                 'SOLR_ENABLE_CLOUD_MODE': 'yes',
@@ -76,89 +119,45 @@ with DAG(
         )
 
         # Task: Initialize Solr
-        initialize_solr = DockerOperator(
+        initialize_solr = BashOperator(
             task_id='initialize_solr',
-            image='apache/sdap-solr-cloud-init:1.4.0',
-            container_name='solr_init',
-            api_version='auto',
-            auto_remove=True,
-            command="bash -c 'solr create -c nexustiles -shards 1 -replicationFactor 1'",
-            docker_url='unix://var/run/docker.sock',
-            network_mode='bridge',
-            environment={
-                'SDAP_ZK_SOLR': 'zookeeper:2181/solr',
-                'SDAP_SOLR_URL': 'http://solr:8983/solr/',
-                'CREATE_COLLECTION_PARAMS': 'name=nexustiles&numShards=1&waitForFinalState=true',
-            },
+            bash_command="/home/marc/Documents/Github/SDAP-AIRFLOW/Apache-SDAP-Airflow/helper_functions/monitor_initialize_solr.sh",
         )
 
         # Task: Start Cassandra
         start_cassandra = DockerOperator(
             task_id='start_cassandra',
-            image='bitnami/cassandra:3.11.6-debian-10-r138',
+            image=f"bitnami/cassandra:{os.environ.get('CASSANDRA_VERSION', '3.11.6-debian-10-r138')}",
             container_name='cassandra',
             api_version='auto',
             auto_remove=True,
             command="cassandra -f",
             docker_url='unix://var/run/docker.sock',
-            network_mode='bridge',
+            network_mode='sdap-net',
+            volumes=[
+                f"{os.environ['CASSANDRA_DATA']}:/bitnami",
+                f"{os.environ['CASSANDRA_INIT']}/initdb.cql:/scripts/initdb.cql"
+            ],
+            environment={
+                'CASSANDRA_CLUSTER_NAME': 'cassandra',
+                'CASSANDRA_PASSWORD_SEEDER': 'cassandra',
+            },
         )
 
         # Task: Initialize Cassandra
-        initialize_cassandra = DockerOperator(
+        initialize_cassandra = BashOperator(
             task_id='initialize_cassandra',
-            image='bitnami/cassandra:3.11.6-debian-10-r138',
-            container_name='cassandra_init',
-            api_version='auto',
-            auto_remove=True,
-            command="bash -c 'cqlsh -e \"CREATE KEYSPACE IF NOT EXISTS nexustiles WITH REPLICATION = { 'class': 'SimpleStrategy', 'replication_factor': 1 }; CREATE TABLE IF NOT EXISTS nexustiles.sea_surface_temp (tile_id uuid PRIMARY KEY, tile_blob blob);\"'",
-            docker_url='unix://var/run/docker.sock',
-            network_mode='bridge',
+            bash_command="""
+            docker exec cassandra bash -c "cqlsh -u cassandra -p cassandra -f /scripts/initdb.cql"
+            """,
         )
 
+
         # Define dependencies within the core components group
-        start_zookeeper >> verify_zookeeper >> start_solr >> initialize_solr >> start_cassandra >> initialize_cassandra
+        start_zookeeper >> verify_zookeeper >> create_solr_znode >> start_solr >> initialize_solr >> start_cassandra >> initialize_cassandra
 
     # Task Group: Start the Ingester
     with TaskGroup("start_ingester") as ingester_group:
-
-        # Task 1: Export environment variables
-        export_env_vars = BashOperator(
-            task_id='export_env_vars',
-            bash_command="""
-            export DOCKER_DEFAULT_PLATFORM=linux/amd64 &&
-            export RABBITMQ_HOST=rabbitmq &&
-            export RABBITMQ_USERNAME=user &&
-            export RABBITMQ_PASSWORD=bitnami &&
-            export CASSANDRA_CONTACT_POINTS=cassandra &&
-            export CASSANDRA_USERNAME=cassandra &&
-            export CASSANDRA_PASSWORD=cassandra &&
-            export SOLR_HOST_AND_PORT=http://solr:8983
-            """,
-        )
-
-        # Task 2: Make required directories
-        make_directories = BashOperator(
-            task_id='make_directories',
-            bash_command="""
-            mkdir -p /data/cassandra &&
-            mkdir -p /data/solr &&
-            mkdir -p /data/rabbitmq
-            """,
-        )
-
-        # Task 3: Pull required Docker images
-        pull_docker_images = BashOperator(
-            task_id='pull_docker_images',
-            bash_command="""
-            docker pull zookeeper:3.5.5 &&
-            docker pull apache/sdap-solr-cloud:1.4.0 &&
-            docker pull apache/sdap-solr-cloud-init:1.4.0 &&
-            docker pull bitnami/cassandra:3.11.6-debian-10-r138 &&
-            docker pull bitnami/rabbitmq:3.8.9-debian-10-r37 &&
-            docker pull apache/sdap-granule-ingester:1.4.0
-            """,
-        )
 
         # Task: Start RabbitMQ
         start_rabbitmq = DockerOperator(
@@ -169,7 +168,7 @@ with DAG(
             auto_remove=True,
             command="rabbitmq-server",
             docker_url='unix://var/run/docker.sock',
-            network_mode='bridge',
+            network_mode='sdap-net',
         )
 
         # Task: Start Granule Ingester
@@ -181,7 +180,7 @@ with DAG(
             auto_remove=True,
             command="python3 -m granule_ingester",
             docker_url='unix://var/run/docker.sock',
-            network_mode='bridge',
+            network_mode='sdap-net',
             environment={
                 'RABBITMQ_HOST': 'rabbitmq:5672',
                 'RABBITMQ_USERNAME': 'user',
@@ -196,9 +195,17 @@ with DAG(
         # Task: Start Collection Manager
         start_collection_manager = DockerOperator(
             task_id='start_collection_manager',
-            image='apache/sdap-collection-manager:1.4.0'
-
+            image='apache/sdap-collection-manager:1.4.0',
+            container_name='collection_manager',
+            api_version='auto',
+            auto_remove=True,
+            command="start-collection-manager.sh",
+            docker_url='unix://var/run/docker.sock',
+            network_mode='sdap-net',
         )
 
-        # Task group dependencies
-        setup_group >> core_components_group >> ingester_group >> webapp_group >> clean_up_group
+        # Define dependencies within the ingester group
+        start_rabbitmq >> start_granule_ingester >> start_collection_manager
+
+    # Define task group dependencies
+    setup_group >> core_components_group >> ingester_group

@@ -1,3 +1,11 @@
+# Custom
+nexus-quickstart/
+airflow/airflow.db
+airflow/standalone_admin_password.txt
+airflow/webserver_config.py
+airflow/airflow.cfg
+airflow/airflow-webserver.pid
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

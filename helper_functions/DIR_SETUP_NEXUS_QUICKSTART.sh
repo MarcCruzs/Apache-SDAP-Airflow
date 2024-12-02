@@ -1,7 +1,7 @@
 #!/bin/bash
 # Used to make the directories for 1.4.0 SDAP Nexus QUICKSTART
 # NOTE: Using 1.4.0 Version & Using Release Builds
-# Usage: source ~/DIR_SETUP_NEXUS_QUICKSTART.sh
+# Usage: source ~/DIR_SETUP_NEXUS_QUICKSTART.sh <DIRECTORY_ROOT>
 
 if [ $# -eq 0 ]; then
     DIRECTORY_ROOT=${HOME}
@@ -9,10 +9,14 @@ if [ $# -eq 0 ]; then
     echo "DIRECTORY_ROOT is defaulted to the home directory: ${DIRECTORY_ROOT}"
 else
     DIRECTORY_ROOT="$1"
+    echo "DIRECTORY_ROOT is set as: $1"
 fi
 
 # DEFAULT DOCKER PLATFORM
 export DOCKER_DEFAULT_PLATFORM=linux/amd64
+
+# custom
+export GRANULE_INGESTER_PATHWAY=${DIRECTORY_ROOT}/nexus-quickstart
 
 # SET TAG VARIABLES
 export CASSANDRA_VERSION=3.11.6-debian-10-r138

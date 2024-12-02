@@ -6,6 +6,8 @@ from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
 from datetime import datetime, timedelta
 import os
+from airflow.sensors.base import BaseSensorOperator
+import requests
 
 # Default arguments for the DAG
 default_args = {
@@ -14,6 +16,21 @@ default_args = {
     'retries': 3,
     'retry_delay': timedelta(seconds=30),
 }
+
+
+class ZookeeperReadySensor(BaseSensorOperator):
+    """
+    Custom sensor to check if Zookeeper is ready by polling its status endpoint.
+    """
+    def poke(self, context):
+        try:
+            # Replace with the correct endpoint if Zookeeper has a different health check URL
+            response = requests.get("http://localhost:2181", timeout=5)
+            # Check if the server is up (adjust based on your readiness criteria)
+            return response.status_code == 200
+        except Exception:
+            return False
+
 
 # Function to set the default Docker platform
 def set_docker_platform():
@@ -43,13 +60,13 @@ with DAG(
         setup_directory_task = BashOperator(
             task_id="setup_directory_task",
             bash_command="""
-            set -a && source DIR_SETUP_NEXUS_QUICKSTART.sh /home/marc/Documents/Github/SDAP-AIRFLOW/Apache-SDAP-Airflow/ && set +a
+            set -a && source /home/marc/Documents/Github/SDAP-AIRFLOW/Apache-SDAP-Airflow/helper_functions/DIR_SETUP_NEXUS_QUICKSTART.sh ~/home/marc/Documents/Github/SDAP-AIRFLOW/Apache-SDAP-Airflow/ && set +a
             """,
         )
 
         create_docker_network = BashOperator(
             task_id="create_docker_network",
-            bash_command="docker network create sdap-net || echo 'sdap-net already exists'",
+            bash_command="docker network create --driver bridge --attachable sdap-net || echo 'sdap-net already exists'",
         )
 
         # Task: Pull Docker Images
@@ -74,25 +91,17 @@ with DAG(
     with TaskGroup("start_core_components") as core_components_group:
 
         # Task: Start Zookeeper
-        start_zookeeper = DockerOperator(
+        start_zookeeper = BashOperator(
             task_id='start_zookeeper',
-            image=f"zookeeper:{os.environ.get('ZK_VERSION', '3.5.5')}",
-            container_name='zookeeper',
-            api_version='auto',
-            auto_remove=True,
-            command="zkServer.sh start-foreground",
-            docker_url='unix://var/run/docker.sock',
-            network_mode='sdap-net',
+            bash_command=f"docker run --name zookeeper -dp 2181:2181 zookeeper:{os.environ.get('ZK_VERSION', '3.5.5')}",
         )
 
-        # Task: Verify Zookeeper is running
-        verify_zookeeper = HttpSensor(
-            task_id='verify_zookeeper',
-            http_conn_id='zookeeper_connection',
-            endpoint='/',
-            timeout=600,
-            poke_interval=10,
-        )
+        # Task: Wait for Zookeeper to be ready
+        # wait_for_zookeeper = ZookeeperReadySensor(
+        #     task_id='wait_for_zookeeper',
+        #     poke_interval=5,  # Check every 5 seconds
+        #     timeout=120,      # Wait for up to 10 minutes
+        # )
 
         # Task: Create ZNode for Solr
         create_solr_znode = BashOperator(
@@ -103,106 +112,143 @@ with DAG(
         )
 
         # Task: Start Solr
-        start_solr = DockerOperator( 
+        start_solr = BashOperator(
             task_id='start_solr',
-            image=f"apache/sdap-solr-cloud:{os.environ.get('SOLR_VERSION', '1.4.0')}",
-            container_name='solr',
-            api_version='auto',
-            auto_remove=True,
-            command="solr start -f",
-            docker_url='unix://var/run/docker.sock',
-            network_mode='sdap-net',
-            environment={
-                'SOLR_ZK_HOSTS': 'zookeeper:2181',
-                'SOLR_ENABLE_CLOUD_MODE': 'yes',
+            bash_command="""
+            docker run --name solr --network sdap-net \
+            -v ${SOLR_DATA}/:/bitnami \
+            -p 8983:8983 \
+            -e SOLR_ZK_HOSTS="host.docker.internal:2181" \
+            -e SOLR_ENABLE_CLOUD_MODE="yes" \
+            -d ${REPO}/sdap-solr-cloud:${SOLR_VERSION}
+            """,
+            env={
+                "SOLR_DATA": os.environ.get("SOLR_DATA"),
+                "REPO": os.environ.get("REPO", "apache"),
+                "SOLR_VERSION": os.environ.get("SOLR_VERSION", "1.4.0"),
             },
         )
 
+        # initialize_solr_init = BashOperator(
+        #     task_id='initialize_solr_init',
+        #     bash_command="""
+        #     docker run -it --rm --name solr-init --network sdap-net \
+        #     -e SDAP_ZK_SOLR="host.docker.internal:2181/solr" \
+        #     -e SDAP_SOLR_URL="http://host.docker.internal:8983/solr/" \
+        #     -e CREATE_COLLECTION_PARAMS="name=nexustiles&numShards=1&waitForFinalState=true" \
+        #     ${REPO}/sdap-solr-cloud-init:${SOLR_CLOUD_INIT_VERSION}
+        #     """,
+        #     env={
+        #         "REPO": os.environ.get("REPO", "apache"),
+        #         "SOLR_CLOUD_INIT_VERSION": os.environ.get("SOLR_CLOUD_INIT_VERSION", "1.4.0"),
+        #     },
+        # )
+
+
         # Task: Initialize Solr
-        initialize_solr = BashOperator(
-            task_id='initialize_solr',
-            bash_command="/home/marc/Documents/Github/SDAP-AIRFLOW/Apache-SDAP-Airflow/helper_functions/monitor_initialize_solr.sh",
+        initialize_solr_nexustiles = BashOperator(
+            task_id='initialize_solr_nexustiles',
+            bash_command="{{ 'bash /home/marc/Documents/Github/SDAP-AIRFLOW/Apache-SDAP-Airflow/helper_functions/monitor_initialize_solr.sh' }}",
         )
 
         # Task: Start Cassandra
-        start_cassandra = DockerOperator(
+        start_cassandra = BashOperator(
             task_id='start_cassandra',
-            image=f"bitnami/cassandra:{os.environ.get('CASSANDRA_VERSION', '3.11.6-debian-10-r138')}",
-            container_name='cassandra',
-            api_version='auto',
-            auto_remove=True,
-            command="cassandra -f",
-            docker_url='unix://var/run/docker.sock',
-            network_mode='sdap-net',
-            volumes=[
-                f"{os.environ['CASSANDRA_DATA']}:/bitnami",
-                f"{os.environ['CASSANDRA_INIT']}/initdb.cql:/scripts/initdb.cql"
-            ],
-            environment={
-                'CASSANDRA_CLUSTER_NAME': 'cassandra',
-                'CASSANDRA_PASSWORD_SEEDER': 'cassandra',
+            bash_command="""
+            docker run --name cassandra --network sdap-net \
+            -p 9042:9042 \
+            -v ${CASSANDRA_DATA}/cassandra/:/bitnami \
+            -v "${CASSANDRA_INIT}/initdb.cql:/scripts/initdb.cql" \
+            -d bitnami/cassandra:${CASSANDRA_VERSION}
+            """,
+            env={
+                "CASSANDRA_DATA": os.environ.get("CASSANDRA_DATA"),
+                "CASSANDRA_INIT": os.environ.get("CASSANDRA_INIT"),
+                "CASSANDRA_VERSION": os.environ.get("CASSANDRA_VERSION", "3.11.6-debian-10-r138"),
             },
         )
+
 
         # Task: Initialize Cassandra
         initialize_cassandra = BashOperator(
             task_id='initialize_cassandra',
             bash_command="""
-            docker exec cassandra bash -c "cqlsh -u cassandra -p cassandra -f /scripts/initdb.cql"
+            sleep 30
+            for i in {1..10}; do
+                echo "Attempt $i to initialize Cassandra..."
+                docker exec cassandra bash -c "cqlsh -u cassandra -p cassandra -f /scripts/initdb.cql" && break
+                echo "Initialization failed. Retrying in 30 seconds..."
+                sleep 30
+            done
             """,
         )
 
 
+
         # Define dependencies within the core components group
-        start_zookeeper >> verify_zookeeper >> create_solr_znode >> start_solr >> initialize_solr >> start_cassandra >> initialize_cassandra
+        # start_zookeeper >> wait_for_zookeeper >> create_solr_znode >> start_solr >> initialize_solr >> start_cassandra >> initialize_cassandra
+        start_zookeeper >> create_solr_znode >> start_solr >> initialize_solr_nexustiles >> start_cassandra >> initialize_cassandra
 
     # Task Group: Start the Ingester
     with TaskGroup("start_ingester") as ingester_group:
 
         # Task: Start RabbitMQ
-        start_rabbitmq = DockerOperator(
+        start_rabbitmq = BashOperator(
             task_id='start_rabbitmq',
-            image='bitnami/rabbitmq:3.8.9-debian-10-r37',
-            container_name='rabbitmq',
-            api_version='auto',
-            auto_remove=True,
-            command="rabbitmq-server",
-            docker_url='unix://var/run/docker.sock',
-            network_mode='sdap-net',
+            bash_command="""
+            echo "RMQ_VERSION=${RMQ_VERSION}"
+            docker run -dp 5672:5672 -p 15672:15672 --name rmq --network sdap-net bitnami/rabbitmq:${RMQ_VERSION}
+            """,
+            env={"RMQ_VERSION": os.environ.get("RMQ_VERSION", "3.8.9-debian-10-r37")},
         )
 
+
         # Task: Start Granule Ingester
-        start_granule_ingester = DockerOperator(
+        start_granule_ingester = BashOperator(
             task_id='start_granule_ingester',
-            image='apache/sdap-granule-ingester:1.4.0',
-            container_name='granule_ingester',
-            api_version='auto',
-            auto_remove=True,
-            command="python3 -m granule_ingester",
-            docker_url='unix://var/run/docker.sock',
-            network_mode='sdap-net',
-            environment={
-                'RABBITMQ_HOST': 'rabbitmq:5672',
-                'RABBITMQ_USERNAME': 'user',
-                'RABBITMQ_PASSWORD': 'bitnami',
-                'CASSANDRA_CONTACT_POINTS': 'cassandra',
-                'CASSANDRA_USERNAME': 'cassandra',
-                'CASSANDRA_PASSWORD': 'cassandra',
-                'SOLR_HOST_AND_PORT': 'http://solr:8983',
+            bash_command="""
+            echo "GRANULE_INGESTER_PATHWAY=${GRANULE_INGESTER_PATHWAY}"
+            echo "DATA_DIRECTORY=${DATA_DIRECTORY}"
+            echo "REPO=${REPO}"
+            echo "GRANULE_INGESTER_VERSION=${GRANULE_INGESTER_VERSION}"
+            docker run --name granule-ingester --network sdap-net -d \
+                --env-file ${GRANULE_INGESTER_PATHWAY}/granule-ingester.env \
+                -v ${DATA_DIRECTORY}:/data/granules/ \
+                ${REPO}/sdap-granule-ingester:${GRANULE_INGESTER_VERSION}
+            """,
+            env={
+                "GRANULE_INGESTER_PATHWAY": os.environ.get("GRANULE_INGESTER_PATHWAY"),
+                "DATA_DIRECTORY": os.environ.get("DATA_DIRECTORY"),
+                "REPO": os.environ.get("REPO"),
+                "GRANULE_INGESTER_VERSION": os.environ.get("GRANULE_INGESTER_VERSION"),
             },
         )
 
+
+
         # Task: Start Collection Manager
-        start_collection_manager = DockerOperator(
+        start_collection_manager = BashOperator(
             task_id='start_collection_manager',
-            image='apache/sdap-collection-manager:1.4.0',
-            container_name='collection_manager',
-            api_version='auto',
-            auto_remove=True,
-            command="start-collection-manager.sh",
-            docker_url='unix://var/run/docker.sock',
-            network_mode='sdap-net',
+            bash_command="""
+            docker run --name collection-manager --network sdap-net -d \
+            -v ${DATA_DIRECTORY}:/data/granules/ \
+            -v ${CONFIG_DIR}:/home/ingester/config/ \
+            -e COLLECTIONS_PATH="/home/ingester/config/collectionConfig.yml" \
+            -e HISTORY_URL="http://host.docker.internal:8983/" \
+            -e RABBITMQ_HOST="host.docker.internal:5672" \
+            -e RABBITMQ_USERNAME="user" \
+            -e RABBITMQ_PASSWORD="bitnami" \
+            ${REPO}/sdap-collection-manager:${COLLECTION_MANAGER_VERSION}
+            """,
+            env={
+                "DATA_DIRECTORY": os.environ.get("DATA_DIRECTORY"),
+                "CONFIG_DIR": os.environ.get("CONFIG_DIR"),
+                "REPO": os.environ.get("REPO", "apache"),
+                "COLLECTION_MANAGER_VERSION": os.environ.get("COLLECTION_MANAGER_VERSION", "1.4.0"),
+            },
         )
+
+
 
         # Define dependencies within the ingester group
         start_rabbitmq >> start_granule_ingester >> start_collection_manager

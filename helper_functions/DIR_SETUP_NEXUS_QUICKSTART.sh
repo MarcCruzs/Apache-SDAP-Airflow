@@ -1,7 +1,7 @@
 #!/bin/bash
 # Used to make the directories for 1.4.0 SDAP Nexus QUICKSTART
 # NOTE: Using 1.4.0 Version & Using Release Builds
-# Usage: source ~/DIR_SETUP_NEXUS_QUICKSTART.sh
+# Usage: source ~/DIR_SETUP_NEXUS_QUICKSTART.sh <DIRECTORY_ROOT>
 
 if [ $# -eq 0 ]; then
     DIRECTORY_ROOT=${HOME}

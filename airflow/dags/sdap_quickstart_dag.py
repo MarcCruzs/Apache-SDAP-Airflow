@@ -138,9 +138,9 @@ with DAG(
         start_cassandra = BashOperator(
             task_id='start_cassandra',
             bash_command="""
-            echo "CASSANDRA_DATA=${CASSANDRA_DATA}
-            echo "CASSANDRA_INIT=${CASSANDRA_INIT}
-            echo "CASSANDRA_VERSION=${CASSANDRA_VERSION}
+            echo "CASSANDRA_DATA=${CASSANDRA_DATA}"
+            echo "CASSANDRA_INIT=${CASSANDRA_INIT}"
+            echo "CASSANDRA_VERSION=${CASSANDRA_VERSION}"
 
             docker run --name cassandra --network sdap-net \
             -p 9042:9042 \

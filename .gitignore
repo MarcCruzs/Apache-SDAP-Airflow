@@ -1,5 +1,8 @@
 # Custom
 nexus-quickstart/
+airflow/airflow.db
+airflow/webserver_config.py
+airflow/airflow.cfg
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

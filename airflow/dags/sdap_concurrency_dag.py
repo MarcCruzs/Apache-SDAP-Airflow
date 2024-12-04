@@ -18,6 +18,18 @@ default_args = {
     'retry_delay': timedelta(seconds=30),
 }
 
+doc_md_DAG = """
+### Docker Images to be pulled
+
+- Zookeeper
+- Solr
+- Solr init
+- Cassandra
+- RabbitMQ (RMQ)
+- Granule Ingester
+- Collection Manager
+"""
+
 # Parameters
 DATA_DIRECTORY = os.environ.get("DATA_DIRECTORY")
 GRANULE_INGESTER_PATHWAY = os.environ.get("GRANULE_INGESTER_PATHWAY")
@@ -50,6 +62,8 @@ class ZookeeperReadySensor(BaseSensorOperator):
         except Exception:
             return False
 
+def sleep_function() -> None:
+    time.sleep(30)
 
 def get_rmq_queue_status() -> tuple[int, int]:
     """
@@ -177,6 +191,7 @@ with DAG(
         create_docker_network = BashOperator(
             task_id="create_docker_network",
             bash_command="docker network create --driver bridge --attachable sdap-net || echo 'sdap-net already exists'",
+            doc="Creates sdap-net docker network if the network does not exist already"
         )
 
         # Task: Pull Docker Images
@@ -201,6 +216,7 @@ with DAG(
             docker pull apache/sdap-collection-manager:$COLLECTION_MANAGER_VERSION
             """,
             env=os.environ,
+            doc_md=doc_md_DAG
         )
 
         # Task Group Dependencies
@@ -294,6 +310,13 @@ with DAG(
             env={"RMQ_VERSION": os.environ.get("RMQ_VERSION")},
         )
 
+        # Task that sleeps for 30 seconds
+        delay = PythonOperator(
+            task_id='delay',
+            python_callable=sleep_function,
+            doc="This task demonstrates a 30-second delay using Python."
+        )
+
         start_collection_manager = BashOperator(
             task_id='start_collection_manager',
             bash_command="""
@@ -316,7 +339,7 @@ with DAG(
         )
 
         # Dependencies
-        start_zookeeper >> create_solr_znode >> start_solr >> initialize_solr_nexustiles >> start_cassandra >> initialize_cassandra >> start_rabbitmq >> start_collection_manager
+        start_zookeeper >> create_solr_znode >> start_solr >> initialize_solr_nexustiles >> start_cassandra >> initialize_cassandra >> start_rabbitmq >> delay >> start_collection_manager
 
     # Task Group: Start the Ingester
     with TaskGroup("granule_ingester_dynamic_scaling") as ingester_group:
@@ -341,8 +364,25 @@ with DAG(
             provide_context=True,
         )
 
-        calculate_instances >> scale_containers_task >> monitor_and_stop_task
+        calculate_instances >> scale_containers_task >> monitor_and_stop_task        
+
+    with TaskGroup("stop-containers") as tear_down_group:
+        stop_solr = BashOperator(
+            task_id='start_collection_manager',
+            bash_command="""
+            docker exec solr /opt/bitnami/solr/bin/solr stop -p 8983
+            """
+        )
+
+        stop_containers = BashOperator(
+            task_id="stop_containers",
+            bash_command="""
+            docker stop zookeeper solr cassandra rmq collection-manager
+            """
+        )
+
+        stop_solr >> stop_containers
         
 
     #  task group dependencies
-    setup_group >> components_group >> ingester_group
+    setup_group >> components_group >> ingester_group >> tear_down_group

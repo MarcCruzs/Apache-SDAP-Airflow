@@ -176,7 +176,7 @@ with DAG(
     catchup=False,
 ) as dag:
     # Task Group: Setup Environment
-    with TaskGroup("setup_environment") as setup_group:
+    with TaskGroup("setup_environment", tooltip="Handles creating docker network and pulling docker images") as setup_group:
 
         # Task: Source Directory Setup Script
 
@@ -385,4 +385,6 @@ with DAG(
         
 
     #  task group dependencies
-    setup_group >> components_group >> ingester_group >> tear_down_group
+    # setup_group >> components_group >> ingester_group >> tear_down_group
+    setup_group >> components_group >> ingester_group
+

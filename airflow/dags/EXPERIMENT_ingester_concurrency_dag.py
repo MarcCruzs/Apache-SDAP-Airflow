@@ -1,4 +1,5 @@
 from airflow import DAG
+from airflow.utils.task_group import TaskGroup
 from airflow.operators.python import PythonOperator
 from datetime import datetime
 import subprocess
@@ -10,8 +11,11 @@ import os
 # Parameters
 DATA_DIRECTORY = os.environ.get("DATA_DIRECTORY", "/default/data/directory")
 ENV_FILE = os.environ.get("ENV_FILE", "/default/path/to/granule-ingester.env")
-DOCKER_IMAGE = os.environ.get("DOCKER_IMAGE", "default/repo/sdap-granule-ingester:latest")
 DOCKER_NETWORK = os.environ.get("DOCKER_NETWORK", "sdap-net")
+
+REPO = os.environ.get("REPO")
+GRANULE_INGESTER_VERSION = os.environ.get("GRANULE_INGESTER_VERSION")
+DOCKER_IMAGE =  f"{REPO}/sdap-granule-ingester:{GRANULE_INGESTER_VERSION}"
 
 CONTAINER_NAME_PREFIX = "granule-ingester"
 RABBITMQ_QUEUE = "nexus"
@@ -54,6 +58,7 @@ def calculate_required_instances(ti) -> int:
     total_messages = messages_ready + messages_unacknowledged
     required_instances = (total_messages + FILES_PER_INSTANCE - 1) // FILES_PER_INSTANCE  # Ceiling division
     ti.xcom_push(key="required_instances", value=required_instances)
+    print(f"Pushed {required_instances} to XCom with key 'required_instances'")
     return required_instances
 
 
@@ -63,6 +68,7 @@ def scale_containers(ti) -> None:
     """
     required_instances = ti.xcom_pull(task_ids="calculate_instances", key="required_instances")
     running_containers = ti.xcom_pull(task_ids="track_containers", key="running_containers") or []
+    print(f"Pulled required_instances: {required_instances} from Xcom with key 'required instances'")
 
     # Determine scaling actions
     running_count = len(running_containers)
@@ -124,25 +130,28 @@ def monitor_and_stop_all_containers(ti) -> None:
 
 
 with DAG("granule_ingester_dynamic_scaling", default_args=default_args, schedule_interval="*/5 * * * *") as dag:
-    # Task 1: Calculate Required Instances
-    calculate_instances = PythonOperator(
-        task_id="calculate_instances",
-        python_callable=calculate_required_instances,
-        provide_context=True,
-    )
+    
+    
+    with TaskGroup("granule_ingester_dynamic_scaling") as ingester_group:
+        # Task 1: Calculate Required Instances
+        calculate_instances = PythonOperator(
+            task_id="calculate_instances",
+            python_callable=calculate_required_instances,
+            provide_context=True,
+        )
 
-    # Task 2: Scale Containers
-    scale_containers_task = PythonOperator(
-        task_id="scale_containers",
-        python_callable=scale_containers,
-        provide_context=True,
-    )
+        # Task 2: Scale Containers
+        scale_containers_task = PythonOperator(
+            task_id="scale_containers",
+            python_callable=scale_containers,
+            provide_context=True,
+        )
 
-    # Task 3: Monitor Queue and Stop All Containers
-    monitor_and_stop_task = PythonOperator(
-        task_id="monitor_and_stop_containers",
-        python_callable=monitor_and_stop_all_containers,
-        provide_context=True,
-    )
+        # Task 3: Monitor Queue and Stop All Containers
+        monitor_and_stop_task = PythonOperator(
+            task_id="monitor_and_stop_containers",
+            python_callable=monitor_and_stop_all_containers,
+            provide_context=True,
+        )
 
-    calculate_instances >> scale_containers_task >> monitor_and_stop_task
+        calculate_instances >> scale_containers_task >> monitor_and_stop_task

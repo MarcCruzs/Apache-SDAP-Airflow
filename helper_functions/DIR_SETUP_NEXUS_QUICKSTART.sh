@@ -45,7 +45,7 @@ export CASSANDRA_DATA=${DIRECTORY_ROOT}/nexus-quickstart/cassandra
 mkdir -p ${CASSANDRA_INIT}
 mkdir -p ${CASSANDRA_DATA}
 
-cat << EOF >> ${CASSANDRA_INIT}/initdb.cql
+cat << EOF > ${CASSANDRA_INIT}/initdb.cql
 CREATE KEYSPACE IF NOT EXISTS nexustiles WITH REPLICATION = { 'class': 'SimpleStrategy', 'replication_factor': 1 };
 
 CREATE TABLE IF NOT EXISTS nexustiles.sea_surface_temp  (
@@ -59,7 +59,7 @@ export DATA_DIRECTORY=${DIRECTORY_ROOT}/nexus-quickstart/data/
 mkdir -p ${DATA_DIRECTORY}
 
 # GRANULE INGESTER/s
-cat << EOF >> ${DIRECTORY_ROOT}/nexus-quickstart/granule-ingester.env
+cat << EOF > ${DIRECTORY_ROOT}/nexus-quickstart/granule-ingester.env
 RABBITMQ_HOST=host.docker.internal:5672
 RABBITMQ_USERNAME=user
 RABBITMQ_PASSWORD=bitnami
@@ -75,7 +75,7 @@ mkdir -p ${DATA_DIRECTORY}/avhrr-granules
 # COLLECTION CONFIGURATION
 export CONFIG_DIR=${DIRECTORY_ROOT}/nexus-quickstart/ingester/config
 mkdir -p ${CONFIG_DIR}
-cat << EOF >> ${CONFIG_DIR}/collectionConfig.yml
+cat << EOF > ${CONFIG_DIR}/collectionConfig.yml
 collections:
   - id: AVHRR_OI_L4_GHRSST_NCEI
     path: /data/granules/avhrr-granules/*AVHRR_OI-GLOB-v02.0-fv02.0.nc

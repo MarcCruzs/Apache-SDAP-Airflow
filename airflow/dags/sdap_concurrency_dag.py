@@ -366,22 +366,22 @@ with DAG(
 
         calculate_instances >> scale_containers_task >> monitor_and_stop_task        
 
-    with TaskGroup("stop-containers") as tear_down_group:
-        stop_solr = BashOperator(
-            task_id='start_collection_manager',
-            bash_command="""
-            docker exec solr /opt/bitnami/solr/bin/solr stop -p 8983
-            """
-        )
+    # with TaskGroup("stop-containers") as tear_down_group:
+    #     stop_solr = BashOperator(
+    #         task_id='start_collection_manager',
+    #         bash_command="""
+    #         docker exec solr /opt/bitnami/solr/bin/solr stop -p 8983
+    #         """
+    #     )
 
-        stop_containers = BashOperator(
-            task_id="stop_containers",
-            bash_command="""
-            docker stop zookeeper solr cassandra rmq collection-manager
-            """
-        )
+    #     stop_containers = BashOperator(
+    #         task_id="stop_containers",
+    #         bash_command="""
+    #         docker stop zookeeper solr cassandra rmq collection-manager
+    #         """
+    #     )
 
-        stop_solr >> stop_containers
+    #     stop_solr >> stop_containers
         
 
     #  task group dependencies
